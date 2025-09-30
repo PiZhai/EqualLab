@@ -1,0 +1,77 @@
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+.env.*
+.envrc
+.direnv/
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Logs / caches
+logs/
+*.log
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.pyre/
+.pytype/
+.ropeproject
+
+# Test coverage
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# IDE / Editor
+.idea/
+.vscode/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Temp files
+tmp/
+temp/
+*.tmp
+
+# Docker (optional overrides)
+docker-compose.override.yml
+
+# Optional artifacts (uncomment if needed)
+# models/
+# checkpoints/
+# outputs/
+
+
