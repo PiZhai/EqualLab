@@ -1,26 +1,13 @@
-from typing import Dict, Any, Tuple
+from typing import Dict, Any
 
 from .normalization.preprocess import preprocess_text
 from .normalization.latex_clean import clean_latex
 from .normalization.to_sympy import parse_to_sympy
 from .similarity.scorer import similarity as _similarity
+from .chem import normalize_formula, formulas_equivalent, balance_reaction_info, reactions_equivalent
 
-# 懒加载 texteller 以避免每次导入均加载模型
-_TT_MODEL = None
-_TT_TOKENIZER = None
-
-
-def _ensure_texteller_loaded(use_onnx: bool = False) -> Tuple[Any, Any]:
-    global _TT_MODEL, _TT_TOKENIZER  # noqa: PLW0603
-    if _TT_MODEL is not None and _TT_TOKENIZER is not None:
-        return _TT_MODEL, _TT_TOKENIZER
-    try:
-        from texteller import load_model, load_tokenizer  # type: ignore
-    except Exception as e:  # noqa: BLE001
-        raise RuntimeError(f"texteller import failed: {e}")
-    _TT_MODEL = load_model(use_onnx=use_onnx)
-    _TT_TOKENIZER = load_tokenizer()
-    return _TT_MODEL, _TT_TOKENIZER
+import os
+import requests
 
 
 def normalize(input_text: str, is_latex: bool | None = None) -> Dict[str, Any]:
@@ -91,20 +78,51 @@ def similarity(a: str, b: str, assumptions: Dict[str, Any] | None = None) -> Dic
 def image_latex_similarity(image_path: str, latex: str, assumptions: Dict[str, Any] | None = None, use_onnx: bool = False) -> Dict[str, Any]:
     """
     识别图片中的公式为 LaTeX，并与传入的 LaTeX 进行等价/相似度比对。
+    通过 HTTP 请求远程 OCR 服务（如 TexTeller web），期望接口形如 GET {server_url}?path={image_path}。
     返回：{"image_latex": str, "input_latex": str, "result": similarity(...) }
     """
+    # server_url = os.getenv("TEXTELLER_SERVER_URL")
+    server_url = "http://47.116.161.224:8501/predict"
+    if not server_url:
+        raise RuntimeError(
+            "TEXTELLER_SERVER_URL 未设置，请配置指向 OCR 服务的 HTTP 接口，例如 http://127.0.0.1:8502/predict"
+        )
+
     try:
-        from texteller import img2latex  # type: ignore
-    except Exception as e:  # noqa: BLE001
-        raise RuntimeError(f"texteller import failed: {e}")
+        resp = requests.get(server_url, params={"path": image_path}, timeout=15)
+    except requests.RequestException as e:  # noqa: BLE001
+        raise RuntimeError(f"HTTP 请求 OCR 服务失败: {e}")
 
-    model, tokenizer = _ensure_texteller_loaded(use_onnx=use_onnx)
-    outs = img2latex(model, tokenizer, [image_path])
-    if not outs:
-        raise RuntimeError("img2latex returned empty result")
-    img_latex_raw = outs[0] or ""
+    if resp.status_code != 200:
+        trunc = (resp.text or "")[:200]
+        raise RuntimeError(f"OCR 服务返回非 200 状态码: {resp.status_code}, 响应片段: {trunc}")
 
-    # 包裹检测与剥壳（仅用于展示），计算时保留/补齐包裹
+    img_latex_raw = ""
+    # 尝试 JSON；否则退回纯文本
+    try:
+        if "application/json" in (resp.headers.get("Content-Type") or ""):
+            data = resp.json()
+            if isinstance(data, dict):
+                cand = data.get("latex") or data.get("data") or data.get("result") or data.get("prediction")
+                if isinstance(cand, list):
+                    img_latex_raw = (cand[0] or "") if cand else ""
+                elif isinstance(cand, dict) and "latex" in cand:
+                    img_latex_raw = str(cand.get("latex") or "")
+                elif isinstance(cand, str):
+                    img_latex_raw = cand
+            elif isinstance(data, list):
+                if data and isinstance(data[0], str):
+                    img_latex_raw = data[0]
+                elif data and isinstance(data[0], dict) and "latex" in data[0]:
+                    img_latex_raw = str(data[0].get("latex") or "")
+        else:
+            img_latex_raw = resp.text.strip()
+    except Exception:
+        img_latex_raw = resp.text.strip()
+
+    if not img_latex_raw:
+        raise RuntimeError("OCR 服务未返回可用的 LaTeX 字符串")
+
     import re as _re
     _wrapper_pat = _re.compile(r"^\s*(?:\$(?:[\s\S]+)\$|\\\((?:[\s\S]+)\\\)|\\\[(?:[\s\S]+)\\\])\s*$")
 
@@ -136,5 +154,114 @@ def image_latex_similarity(image_path: str, latex: str, assumptions: Dict[str, A
     b = _wrap_if_needed(latex)
     result = similarity(a, b, assumptions=assumptions)
     return {"image_latex": image_latex_display, "input_latex": _strip_wrappers(latex), "result": result}
+
+
+# 化学：图片 + 等价/相似度（一步到位）
+
+def chem_image_similarity(image_path: str, text: str, type_: str) -> Dict[str, Any]:
+    """
+    识别化学图片为文本，并与传入的化学文本进行等价/相似度比对。
+    type_ ∈ {"formula", "reaction"}
+    通过 HTTP 请求远程 OCR 服务（同上），期望接口形如 GET {server_url}?path={image_path}。
+    返回：{"image_text": str, "input_text": str, "type": type_, "result": {"equivalent": bool, "detail": {...}} }
+    """
+    server_url = os.getenv("TEXTELLER_SERVER_URL")
+    if not server_url:
+        raise RuntimeError(
+            "TEXTELLER_SERVER_URL 未设置，请配置指向 OCR 服务的 HTTP 接口，例如 http://127.0.0.1:8502/predict"
+        )
+
+    try:
+        resp = requests.get(server_url, params={"path": image_path}, timeout=15)
+    except requests.RequestException as e:  # noqa: BLE001
+        raise RuntimeError(f"HTTP 请求 OCR 服务失败: {e}")
+
+    if resp.status_code != 200:
+        trunc = (resp.text or "")[:200]
+        raise RuntimeError(f"OCR 服务返回非 200 状态码: {resp.status_code}, 响应片段: {trunc}")
+
+    # 解析为纯文本优先；若为 JSON 则尝试常见字段
+    ocr_text_raw = ""
+    try:
+        if "application/json" in (resp.headers.get("Content-Type") or ""):
+            data = resp.json()
+            if isinstance(data, dict):
+                cand = data.get("text") or data.get("data") or data.get("result") or data.get("prediction") or data.get("latex")
+                if isinstance(cand, list):
+                    ocr_text_raw = (cand[0] or "") if cand else ""
+                elif isinstance(cand, dict):
+                    # 尝试常见键
+                    for k in ("text", "latex"):
+                        if k in cand:
+                            ocr_text_raw = str(cand.get(k) or "")
+                            break
+                elif isinstance(cand, str):
+                    ocr_text_raw = cand
+            elif isinstance(data, list):
+                if data and isinstance(data[0], str):
+                    ocr_text_raw = data[0]
+                elif data and isinstance(data[0], dict):
+                    for k in ("text", "latex"):
+                        if k in data[0]:
+                            ocr_text_raw = str(data[0].get(k) or "")
+                            break
+        else:
+            ocr_text_raw = resp.text.strip()
+    except Exception:
+        ocr_text_raw = resp.text.strip()
+
+    if not ocr_text_raw:
+        raise RuntimeError("OCR 服务未返回可用的化学文本")
+
+    import re as _re
+
+    def _strip_math_wrappers(s: str) -> str:
+        m = _re.fullmatch(r"\s*\$(.*)\$\s*", s, flags=_re.DOTALL)
+        if m:
+            return m.group(1).strip()
+        m = _re.fullmatch(r"\s*\\\((.*)\\\)\s*", s, flags=_re.DOTALL)
+        if m:
+            return m.group(1).strip()
+        m = _re.fullmatch(r"\s*\\\[(.*)\\\]\s*", s, flags=_re.DOTALL)
+        if m:
+            return m.group(1).strip()
+        return s.strip()
+
+    def _strip_common_macros(s: str) -> str:
+        # 移除简单 LaTeX 宏包装，如 \ce{...}, \mathrm{...}, \text{...}
+        s = _re.sub(r"\\(?:ce|mathrm|text)\{([^}]*)\}", r"\1", s)
+        # 移除多余空白
+        return s.strip()
+
+    image_text = _strip_common_macros(_strip_math_wrappers(ocr_text_raw))
+    input_text = _strip_common_macros(_strip_math_wrappers(text))
+
+    kind = (type_ or "").strip().lower()
+    if kind not in {"formula", "reaction"}:
+        raise RuntimeError("type 必须为 'formula' 或 'reaction'")
+
+    if kind == "formula":
+        equiv = formulas_equivalent(image_text, input_text)
+        detail = {
+            "normalized_a": normalize_formula(image_text),
+            "normalized_b": normalize_formula(input_text),
+        }
+    else:  # reaction
+        equiv = reactions_equivalent(image_text, input_text)
+        # 可选：给出配平信息，便于排查
+        try:
+            ra = balance_reaction_info(image_text)
+        except Exception:
+            ra = None
+        try:
+            rb = balance_reaction_info(input_text)
+        except Exception:
+            rb = None
+        detail = {
+            "balance_a": ra,
+            "balance_b": rb,
+        }
+
+    return {"image_text": image_text, "input_text": input_text, "type": kind, "result": {"equivalent": equiv, "detail": detail}}
 
 

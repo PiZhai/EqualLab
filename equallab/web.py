@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from .api import normalize as _normalize, similarity as _similarity, image_latex_similarity as _image_latex_similarity
+from .api import chem_image_similarity as _chem_image_similarity
 from .assumptions.config import parse_assumptions_json
 from .chem import (
     normalize_formula,
@@ -56,12 +57,17 @@ class ChemEqReq(BaseModel):
 
 class ChemBalanceReq(BaseModel):
     reaction: str
+
 class ImageSimReq(BaseModel):
     image_path: str
     latex: str
     assumptions: Dict[str, Any] | None = None
     use_onnx: bool = False
 
+class ChemImageSimReq(BaseModel):
+    image_path: str
+    text: str
+    type: str  # "formula" | "reaction"
 
 
 @app.post("/normalize")
@@ -128,4 +134,12 @@ def image_similarity(req: ImageSimReq):
     res["a"] = a
     res["b"] = b
     return {"image_latex": out["image_latex"], "input_latex": out["input_latex"], "result": res}
+
+
+@app.post("/chem/image/similarity")
+def chem_image_similarity_endpoint(req: ChemImageSimReq):
+    """化学：一步到位的图片识别 + 等价判断。"""
+    out = _chem_image_similarity(req.image_path, req.text, req.type)
+    # 直接返回业务结果结构：{"image_text","input_text","type","result":{...}}
+    return out
 

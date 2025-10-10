@@ -1,14 +1,3 @@
-from texteller import load_model, load_tokenizer, img2latex
-
-# Load models
-model = load_model(use_onnx=False)
-tokenizer = load_tokenizer()
-
-# Convert image to LaTeX
-latex = img2latex(model, tokenizer, ["x2y.png"])[0]
-
-# texteller inference "/Users/pizhai/PycharmProjects/EqualLab/x2y.png"
-# 更多参数请查看 texteller inference --help
-
-# texteller web
-# 在浏览器中输入 http://localhost:8501 查看网页演示
+# 已移除本地 texteller 模型调用示例，改为参考 HTTP OCR 用法。
+# 请使用 equallab.api.image_latex_similarity 并设置环境变量 TEXTELLER_SERVER_URL 指向 OCR 服务。
+# 示例：requests.get(os.getenv("TEXTELLER_SERVER_URL"), params={"path": "/abs/path/to/img.png"})
